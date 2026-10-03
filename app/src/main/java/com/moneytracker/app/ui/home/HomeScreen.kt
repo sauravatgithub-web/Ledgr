@@ -25,8 +25,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -88,19 +90,14 @@ fun HomeScreen(
                 )
             }
             item {
-                Text(
-                    text = "Recent",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
-                )
-            }
-            item {
                 OutlinedTextField(
                     value = state.searchQuery,
                     onValueChange = viewModel::onSearchChange,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
                     singleLine = true,
-                    label = { Text("Search place or category") },
+                    label = { Text("Search this month") },
                 )
             }
             item {
@@ -134,39 +131,63 @@ fun HomeScreen(
                     }
                 }
             }
-            if (state.recentByDate.isEmpty()) {
+            if (!state.isSearching) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = state.selectedDayLabel,
+                            style = MaterialTheme.typography.titleLarge,
+                        )
+                        if (!state.isTodaySelected) {
+                            TextButton(onClick = viewModel::selectToday) {
+                                Text("Today")
+                            }
+                        }
+                    }
+                }
+            }
+            if (state.expenseGroups.isEmpty()) {
                 item {
                     Column(
                         modifier = Modifier.padding(vertical = 24.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
-                            text = if (state.searchQuery.isNotBlank() ||
+                            text = if (state.isSearching ||
                                 state.categoryFilterId != null ||
                                 state.nonNegotiableFilter != NonNegotiableFilter.ALL
                             ) {
                                 "No matches"
                             } else {
-                                "Nothing logged yet"
+                                "No expenses on this day"
                             },
                             style = MaterialTheme.typography.titleMedium,
                         )
                         Text(
-                            text = "Tap Add expense when you spend — or clear filters.",
+                            text = if (state.isSearching) {
+                                "Try another word, or pick a date below."
+                            } else {
+                                "Pick a date below to see that day’s spend, or add one."
+                            },
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
             } else {
-                state.recentByDate.forEach { group ->
-                    item(key = "header-${group.dateKey}") {
-                        Text(
-                            text = group.label,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
-                        )
+                state.expenseGroups.forEach { group ->
+                    if (state.isSearching) {
+                        item(key = "header-${group.dateKey}") {
+                            Text(
+                                text = group.label,
+                                style = MaterialTheme.typography.titleLarge,
+                                modifier = Modifier.padding(top = 8.dp),
+                            )
+                        }
                     }
                     items(group.expenses, key = { it.id }) { expense ->
                         ExpenseRow(
@@ -176,6 +197,13 @@ fun HomeScreen(
                         )
                     }
                 }
+            }
+            item {
+                MonthCalendar(
+                    days = state.calendarDays,
+                    onDateSelected = viewModel::onDateSelected,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
             }
             item { Spacer(modifier = Modifier.height(72.dp)) }
         }

@@ -16,10 +16,18 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import java.time.Instant
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 enum class NonNegotiableFilter { ALL, ONLY, EXCLUDE }
+
+data class CalendarDay(
+    val date: LocalDate?,
+    val hasExpenses: Boolean,
+    val isToday: Boolean,
+    val isSelected: Boolean,
+)
 
 data class ExpenseDayGroup(
     val dateKey: LocalDate,
@@ -32,7 +40,12 @@ data class HomeUiState(
     val budget: Money = Money.ZERO,
     val spent: Money = Money.ZERO,
     val remaining: Money = Money.ZERO,
-    val recentByDate: List<ExpenseDayGroup> = emptyList(),
+    val calendarDays: List<CalendarDay> = emptyList(),
+    val selectedDate: LocalDate = LocalDate.now(),
+    val selectedDayLabel: String = "Today",
+    val expenseGroups: List<ExpenseDayGroup> = emptyList(),
+    val isSearching: Boolean = false,
+    val isTodaySelected: Boolean = true,
     val categories: List<Category> = emptyList(),
     val categoryNames: Map<Long, String> = emptyMap(),
     val searchQuery: String = "",
@@ -47,12 +60,14 @@ class HomeViewModel(
     private val buildReport = container.buildMonthReport
     private val zone = ZoneId.systemDefault()
     private val dayFormatter = DateTimeFormatter.ofPattern("EEEE, d MMM")
+    private val month = YearMonth.parse(yearMonth)
     private val filters = MutableStateFlow(FilterState())
 
     private data class FilterState(
         val searchQuery: String = "",
         val categoryFilterId: Long? = null,
         val nonNegotiableFilter: NonNegotiableFilter = NonNegotiableFilter.ALL,
+        val selectedDate: LocalDate = LocalDate.now(),
     )
 
     val uiState = combine(
@@ -63,7 +78,13 @@ class HomeViewModel(
     ) { budget, expenses, categories, filter ->
         val report = buildReport(yearMonth, budget, expenses, categories, ReportMode.ALL)
         val query = filter.searchQuery.trim().lowercase()
-        val filtered = expenses.filter { expense ->
+        val today = LocalDate.now(zone)
+        val selected = filter.selectedDate
+        val daysWithSpend = expenses
+            .map { Instant.ofEpochMilli(it.createdAtEpochMs).atZone(zone).toLocalDate() }
+            .toSet()
+
+        fun matches(expense: Expense): Boolean {
             val matchesQuery = query.isEmpty() ||
                 expense.place.lowercase().contains(query) ||
                 (categories.find { it.id == expense.categoryId }?.name?.lowercase()?.contains(query) == true)
@@ -73,31 +94,47 @@ class HomeViewModel(
                 NonNegotiableFilter.ONLY -> expense.isNonNegotiable
                 NonNegotiableFilter.EXCLUDE -> !expense.isNonNegotiable
             }
-            matchesQuery && matchesCategory && matchesFlag
+            return matchesQuery && matchesCategory && matchesFlag
         }
-        val today = LocalDate.now(zone)
-        val yesterday = today.minusDays(1)
-        val grouped = filtered
-            .groupBy { Instant.ofEpochMilli(it.createdAtEpochMs).atZone(zone).toLocalDate() }
+
+        fun dateOf(expense: Expense): LocalDate =
+            Instant.ofEpochMilli(expense.createdAtEpochMs).atZone(zone).toLocalDate()
+
+        fun dayLabel(date: LocalDate): String = when (date) {
+            today -> "Today"
+            today.minusDays(1) -> "Yesterday"
+            else -> date.format(dayFormatter)
+        }
+
+        val matched = expenses.filter(::matches)
+        val visible = if (query.isEmpty()) {
+            matched.filter { dateOf(it) == selected }
+        } else {
+            matched
+        }.sortedByDescending { it.createdAtEpochMs }
+
+        val groups = visible
+            .groupBy { dateOf(it) }
             .toSortedMap(compareByDescending { it })
             .map { (date, dayExpenses) ->
-                val label = when (date) {
-                    today -> "Today"
-                    yesterday -> "Yesterday"
-                    else -> date.format(dayFormatter)
-                }
                 ExpenseDayGroup(
                     dateKey = date,
-                    label = label,
-                    expenses = dayExpenses.sortedByDescending { it.createdAtEpochMs },
+                    label = dayLabel(date),
+                    expenses = dayExpenses,
                 )
             }
+
         HomeUiState(
             yearMonthLabel = YearMonths.displayLabel(yearMonth),
             budget = report.budget,
             spent = report.totalSpent,
             remaining = report.remaining,
-            recentByDate = grouped,
+            calendarDays = buildCalendarDays(month, today, selected, daysWithSpend),
+            selectedDate = selected,
+            selectedDayLabel = dayLabel(selected),
+            expenseGroups = groups,
+            isSearching = query.isNotEmpty(),
+            isTodaySelected = selected == today,
             categories = categories,
             categoryNames = categories.associate { it.id to it.name },
             searchQuery = filter.searchQuery,
@@ -114,6 +151,41 @@ class HomeViewModel(
 
     fun onNonNegotiableFilter(filter: NonNegotiableFilter) = filters.update {
         it.copy(nonNegotiableFilter = filter)
+    }
+
+    fun onDateSelected(date: LocalDate) = filters.update {
+        it.copy(selectedDate = date, searchQuery = "")
+    }
+
+    fun selectToday() = filters.update {
+        it.copy(selectedDate = LocalDate.now(zone), searchQuery = "")
+    }
+
+    private fun buildCalendarDays(
+        month: YearMonth,
+        today: LocalDate,
+        selected: LocalDate,
+        daysWithSpend: Set<LocalDate>,
+    ): List<CalendarDay> {
+        val first = month.atDay(1)
+        val leading = first.dayOfWeek.value - 1
+        val cells = ArrayList<CalendarDay>(42)
+        repeat(leading) {
+            cells += CalendarDay(date = null, hasExpenses = false, isToday = false, isSelected = false)
+        }
+        for (day in 1..month.lengthOfMonth()) {
+            val date = month.atDay(day)
+            cells += CalendarDay(
+                date = date,
+                hasExpenses = date in daysWithSpend,
+                isToday = date == today,
+                isSelected = date == selected,
+            )
+        }
+        while (cells.size % 7 != 0) {
+            cells += CalendarDay(date = null, hasExpenses = false, isToday = false, isSelected = false)
+        }
+        return cells
     }
 
     class Factory(private val container: AppContainer) : ViewModelProvider.Factory {
